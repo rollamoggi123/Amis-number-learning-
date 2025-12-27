@@ -2,17 +2,13 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, runTransaction, collection, getDoc } from 'firebase/firestore';
-import { Settings, User, Play, Save, Edit3, Volume2, RotateCcw, Users, Music, ChevronLeft, ChevronRight, QrCode, Zap, UserCog, Trash2, Plus, Image as ImageIcon, Eye, EyeOff } from 'lucide-react';
+import { Settings, User, Play, Save, Edit3, Volume2, RotateCcw, Users, Music, ChevronLeft, ChevronRight, QrCode, Zap, UserCog, Trash2, Plus, Image as ImageIcon, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
-// --- Firebase Configuration & Initialization ---
-// 修改：智慧判斷設定
-// 1. 如果在預覽環境 (Canvas)，使用系統變數 __firebase_config
-// 2. 如果在正式環境 (Github/Local)，使用您提供的 amis-number-learning 設定
+// --- Firebase Configuration ---
 const getFirebaseConfig = () => {
   if (typeof __firebase_config !== 'undefined') {
     return JSON.parse(__firebase_config);
   }
-  // 您的專案設定
   return {
     apiKey: "AIzaSyBKTAj-f_WeXIiFc3pNTqRX1T24yF11EOw",
     authDomain: "amis-number-learning.firebaseapp.com",
@@ -28,11 +24,11 @@ const app = initializeApp(getFirebaseConfig());
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// 遊戲房間 ID：預覽環境使用系統變數，正式環境預設為 'room_16'
+// 房間 ID 管理：使用變數以便未來擴充 (例如從 URL 參數讀取)
+const ROOM_ID = 'room_19'; 
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'monopoly-demo-room';
 
-// --- Default Data & Types ---
-// 完整圖片列表 (1-10)
+// --- Default Data ---
 const GRID_LAYOUT = [
   { id: 'a', area: 'a', defaultLabel: "cecay", defaultColor: '#bae6fd', defaultSound: '', textColor: '#1e3a8a', defaultImage: 'https://res.cloudinary.com/dm1ksvptk/image/upload/v1766833615/1_cecay_pwaqo9.jpg' }, 
   { id: 'b', area: 'b', defaultLabel: 'tosa', defaultColor: '#ffe8b3', defaultSound: '', textColor: '#1e3a8a', defaultImage: 'https://res.cloudinary.com/dm1ksvptk/image/upload/v1766835102/2_d4uspg.png' },
@@ -59,13 +55,13 @@ const GRID_LAYOUT = [
 const PATH_ORDER = ['a','b','c','d','e','f','g','h','i','j','o','p','q','r','s','t','u','v','w','x'];
 
 const PLAYER_COLORS = [
-  { name: 'Red', value: '#ef4444' },    // 1
-  { name: 'Blue', value: '#3b82f6' },   // 2
-  { name: 'Green', value: '#22c55e' },  // 3
-  { name: 'Yellow', value: '#eab308' }, // 4
-  { name: 'Purple', value: '#a855f7' }, // 5
-  { name: 'Teal', value: '#14b8a6' },   // 6
-  { name: 'Pink', value: '#ec4899' }    // 7
+  { name: 'Red', value: '#ef4444' },    
+  { name: 'Blue', value: '#3b82f6' },   
+  { name: 'Green', value: '#22c55e' },  
+  { name: 'Yellow', value: '#eab308' }, 
+  { name: 'Purple', value: '#a855f7' }, 
+  { name: 'Teal', value: '#14b8a6' },   
+  { name: 'Pink', value: '#ec4899' }    
 ];
 
 const DEFAULT_SENTENCES = [
@@ -353,7 +349,8 @@ export default function MonopolyGame() {
     currentTurnIndex: 0,
     diceValue: 1,
     isRolling: false,
-    lastActionTimestamp: 0
+    lastActionTimestamp: 0,
+    revealedCells: {} // 加入 Firestore 狀態中
   });
   
   const [displayPlayers, setDisplayPlayers] = useState([]);
@@ -363,7 +360,6 @@ export default function MonopolyGame() {
   const [selectedCell, setSelectedCell] = useState(null);
   const [editingSentenceIndex, setEditingSentenceIndex] = useState(null);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(0);
-  const [revealedCells, setRevealedCells] = useState({});
 
   const audioRef = useRef(null);
   const stepAudioRef = useRef(null); 
@@ -371,14 +367,15 @@ export default function MonopolyGame() {
 
   // --- Initialization ---
   useEffect(() => {
-    // 修正：Auth 初始化
     const initAuth = async () => {
-      // 在預覽環境中，使用自訂 Token 登入
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        // 在正式環境中，使用匿名登入
-        await signInAnonymously(auth);
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth Error:", error);
       }
     };
     initAuth();
@@ -389,9 +386,7 @@ export default function MonopolyGame() {
   // Data Sync
   useEffect(() => {
     if (!user) return;
-    // 使用 room_16 確保資料全新且格式正確
-    // 此處的 appId 已包含智慧判斷邏輯
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
+    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
     
     const unsubscribe = onSnapshot(gameDocRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -404,13 +399,20 @@ export default function MonopolyGame() {
           sentences: data.sentences || DEFAULT_SENTENCES,
           currentTurnIndex: typeof data.currentTurnIndex === 'number' ? data.currentTurnIndex : 0,
           diceValue: data.diceValue || 1,
-          isRolling: data.isRolling || false
+          isRolling: data.isRolling || false,
+          revealedCells: data.revealedCells || {}
         }));
 
         setDisplayPlayers(prevDisplayPlayers => {
+            // 如果玩家列表被清空或減少，直接重置以避免錯誤
+            if (serverPlayers.length < prevDisplayPlayers.length) {
+                return serverPlayers;
+            }
             if (prevDisplayPlayers.length === 0) return serverPlayers;
+
             const newDisplayPlayers = [...prevDisplayPlayers];
             let hasChanges = false;
+            
             serverPlayers.forEach((serverPlayer, index) => {
                 if (!newDisplayPlayers[index]) {
                     newDisplayPlayers[index] = serverPlayer;
@@ -421,16 +423,17 @@ export default function MonopolyGame() {
                 const targetPos = serverPlayer.position;
                 if (currentDisplayPos !== targetPos) {
                     hasChanges = true;
+                    // 保持舊位置，讓動畫迴圈處理移動
                     newDisplayPlayers[index] = { ...serverPlayer, position: currentDisplayPos };
                 } else {
                      newDisplayPlayers[index] = serverPlayer;
                      hasChanges = true;
                 }
             });
-            if (newDisplayPlayers.length > serverPlayers.length) return serverPlayers;
             return hasChanges ? newDisplayPlayers : prevDisplayPlayers;
         });
       } else {
+        // Init if not exists
         const initialGridData = {};
         GRID_LAYOUT.forEach(item => {
           initialGridData[item.id] = {
@@ -441,6 +444,7 @@ export default function MonopolyGame() {
             image: item.defaultImage || ''
           };
         });
+        // 使用 setDoc 確保文件建立
         setDoc(gameDocRef, {
           players: [],
           gridData: initialGridData,
@@ -448,9 +452,12 @@ export default function MonopolyGame() {
           currentTurnIndex: 0,
           diceValue: 1,
           isRolling: false,
-          lastActionTimestamp: Date.now()
-        });
+          lastActionTimestamp: Date.now(),
+          revealedCells: {}
+        }).catch(e => console.error("Init Error:", e));
       }
+    }, (error) => {
+        console.error("Firestore sync error:", error);
     });
     return () => unsubscribe();
   }, [user]);
@@ -502,82 +509,133 @@ export default function MonopolyGame() {
      }
   };
 
+  // Toggle Cell Reveal (Sync to Firestore)
+  const toggleCellReveal = async (cellId) => {
+      try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const currentStatus = gameState.revealedCells[cellId] || false;
+        await setDoc(gameDocRef, {
+            revealedCells: {
+                ...gameState.revealedCells,
+                [cellId]: !currentStatus
+            }
+        }, { merge: true });
+      } catch (e) {
+          console.error("Reveal Error:", e);
+      }
+  };
+
   const joinGame = async () => {
     if (!user || !localPlayerName.trim()) return;
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-    const currentPlayerCount = gameState.players.length;
-    const colorIndex = currentPlayerCount % PLAYER_COLORS.length;
-    const assignedColor = PLAYER_COLORS[colorIndex].value;
-    const newPlayer = { id: user.uid, name: localPlayerName, color: assignedColor, position: 0, score: 0 };
-    const existingPlayer = gameState.players.find(p => p.id === user.uid);
-    if (!existingPlayer) await updateDoc(gameDocRef, { players: arrayUnion(newPlayer) });
+    try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const currentPlayerCount = gameState.players.length;
+        const colorIndex = currentPlayerCount % PLAYER_COLORS.length;
+        const assignedColor = PLAYER_COLORS[colorIndex].value;
+        const newPlayer = { id: user.uid, name: localPlayerName, color: assignedColor, position: 0, score: 0 };
+        
+        // 使用 setDoc merge 解決 "No document to update"
+        const existingPlayer = gameState.players.find(p => p.id === user.uid);
+        if (!existingPlayer) {
+            await setDoc(gameDocRef, { players: arrayUnion(newPlayer) }, { merge: true });
+        }
+    } catch(e) {
+        console.error("Join Game Error:", e);
+        alert("加入遊戲失敗，請檢查網路連線");
+    }
   };
 
   const createDemoTeams = async () => {
     if (!user) return;
     if (!confirm("確定要建立3組演示玩家嗎？目前的玩家列表將被重置。")) return;
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-    const demoTeamNames = ["第1組 Dakoc", "第2組 Laway", "Ohay"];
-    const demoPlayers = [
-        { id: user.uid, name: demoTeamNames[0], color: PLAYER_COLORS[0].value, position: 0, score: 0 },
-        { id: 'demo-player-2', name: demoTeamNames[1], color: PLAYER_COLORS[1].value, position: 0, score: 0 },
-        { id: 'demo-player-3', name: demoTeamNames[2], color: PLAYER_COLORS[2].value, position: 0, score: 0 }
-    ];
-    await updateDoc(gameDocRef, { players: demoPlayers, currentTurnIndex: 0, diceValue: 1, isRolling: false });
+    
+    try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const demoTeamNames = ["第1組 Dakoc", "第2組 Laway", "Ohay"];
+        const demoPlayers = [
+            { id: user.uid, name: demoTeamNames[0], color: PLAYER_COLORS[0].value, position: 0, score: 0 },
+            { id: 'demo-player-2', name: demoTeamNames[1], color: PLAYER_COLORS[1].value, position: 0, score: 0 },
+            { id: 'demo-player-3', name: demoTeamNames[2], color: PLAYER_COLORS[2].value, position: 0, score: 0 }
+        ];
+        // 使用 setDoc merge 解決 "No document to update"
+        await setDoc(gameDocRef, { players: demoPlayers, currentTurnIndex: 0, diceValue: 1, isRolling: false }, { merge: true });
+    } catch(e) {
+        console.error("Demo Create Error:", e);
+    }
   };
 
   const updatePlayersList = async (newPlayers) => {
-      const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-      await updateDoc(gameDocRef, { players: newPlayers });
+      try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        await updateDoc(gameDocRef, { players: newPlayers });
+      } catch(e) { console.error("Update Players Error:", e); }
   };
 
   const rollDice = async () => {
-    if (gameState.players.length === 0) return;
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-    await updateDoc(gameDocRef, { isRolling: true });
-    setTimeout(async () => {
-      const roll = Math.floor(Math.random() * 6) + 1;
-      await runTransaction(db, async (transaction) => {
-        const sfDoc = await transaction.get(gameDocRef);
-        if (!sfDoc.exists()) return;
-        const data = sfDoc.data();
-        const players = data.players;
-        const currentIndex = data.currentTurnIndex;
-        const currentPathIndex = players[currentIndex].position;
-        let newPathIndex = (currentPathIndex + roll) % PATH_ORDER.length;
-        players[currentIndex].position = newPathIndex;
-        const nextIndex = (currentIndex + 1) % players.length;
-        transaction.update(gameDocRef, { diceValue: roll, players: players, isRolling: false, currentTurnIndex: nextIndex, lastActionTimestamp: Date.now() });
-      });
-    }, 1000);
+    // 防止連點或未加入時點擊
+    if (gameState.players.length === 0 || gameState.isRolling) return;
+
+    try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        await updateDoc(gameDocRef, { isRolling: true });
+        
+        setTimeout(async () => {
+          const roll = Math.floor(Math.random() * 6) + 1;
+          await runTransaction(db, async (transaction) => {
+            const sfDoc = await transaction.get(gameDocRef);
+            if (!sfDoc.exists()) return;
+            const data = sfDoc.data();
+            const players = data.players;
+            const currentIndex = data.currentTurnIndex;
+            const currentPathIndex = players[currentIndex].position;
+            let newPathIndex = (currentPathIndex + roll) % PATH_ORDER.length;
+            players[currentIndex].position = newPathIndex;
+            const nextIndex = (currentIndex + 1) % players.length;
+            transaction.update(gameDocRef, { diceValue: roll, players: players, isRolling: false, currentTurnIndex: nextIndex, lastActionTimestamp: Date.now() });
+          });
+        }, 1000);
+    } catch(e) {
+        console.error("Roll Dice Error:", e);
+        // 若失敗嘗試重置狀態
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        updateDoc(gameDocRef, { isRolling: false }).catch(()=>{});
+    }
   };
 
   const updateGridCell = async (cellId, newData) => {
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-    await updateDoc(gameDocRef, { [`gridData.${cellId}`]: newData });
-    setSelectedCell(null);
+    try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        await updateDoc(gameDocRef, { [`gridData.${cellId}`]: newData });
+        setSelectedCell(null);
+    } catch(e) { console.error("Update Grid Error:", e); }
   };
 
   const updateSentence = async (index, newText) => {
-    const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-    const newSentences = [...gameState.sentences];
-    newSentences[index] = newText;
-    await updateDoc(gameDocRef, { sentences: newSentences });
-    setEditingSentenceIndex(null);
+    try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const newSentences = [...gameState.sentences];
+        newSentences[index] = newText;
+        await updateDoc(gameDocRef, { sentences: newSentences });
+        setEditingSentenceIndex(null);
+    } catch(e) { console.error("Update Sentence Error:", e); }
   };
 
   const resetGame = async () => {
      if(!confirm("確定要重置遊戲嗎？所有玩家分數和位置將歸零。")) return;
-     const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-     const resetPlayers = gameState.players.map(p => ({...p, position: 0, score: 0}));
-     await updateDoc(gameDocRef, { players: resetPlayers, currentTurnIndex: 0, diceValue: 1, lastActionTimestamp: Date.now() });
+     try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const resetPlayers = gameState.players.map(p => ({...p, position: 0, score: 0}));
+        await updateDoc(gameDocRef, { players: resetPlayers, currentTurnIndex: 0, diceValue: 1, lastActionTimestamp: Date.now(), revealedCells: {} });
+     } catch(e) { console.error("Reset Error:", e); }
   };
   
   const updateScore = async (playerIndex, delta) => {
-      const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', 'room_16');
-      const newPlayers = [...gameState.players];
-      newPlayers[playerIndex].score = (newPlayers[playerIndex].score || 0) + delta;
-      await updateDoc(gameDocRef, { players: newPlayers });
+      try {
+        const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
+        const newPlayers = [...gameState.players];
+        newPlayers[playerIndex].score = (newPlayers[playerIndex].score || 0) + delta;
+        await updateDoc(gameDocRef, { players: newPlayers });
+      } catch(e) { console.error("Update Score Error:", e); }
   };
 
   const gridCells = useMemo(() => {
@@ -671,13 +729,15 @@ export default function MonopolyGame() {
             <div className="game-grid relative">
                {gridCells.map(cell => {
                  const playersHere = displayPlayers.filter(p => PATH_ORDER[p.position] === cell.id);
-                 const isRevealed = revealedCells[cell.id];
+                 // 使用 Firestore 的 revealedCells 狀態，讓所有裝置同步
+                 const isRevealed = gameState.revealedCells[cell.id] || false;
                  const hasImage = !!cell.image;
                  return (
                    <div key={cell.id} className="grid-cell wood-texture" style={{ gridArea: cell.area, backgroundColor: cell.color }} onClick={() => {
                         if(isEditing) { setSelectedCell(cell); } else {
                             playSound(cell.sound);
-                            if(hasImage) { setRevealedCells(prev => ({...prev, [cell.id]: !prev[cell.id]})); }
+                            // 同步翻牌狀態到 Firestore
+                            if(hasImage) { toggleCellReveal(cell.id); }
                             const el = document.getElementById(`cell-${cell.id}`);
                             if(el) { el.classList.add('active'); setTimeout(() => el.classList.remove('active'), 300); }
                         }
