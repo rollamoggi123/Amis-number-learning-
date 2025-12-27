@@ -4,11 +4,16 @@ import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken }
 import { getFirestore, doc, onSnapshot, setDoc, updateDoc, arrayUnion, runTransaction, collection, getDoc } from 'firebase/firestore';
 import { Settings, User, Play, Save, Edit3, Volume2, RotateCcw, Users, Music, ChevronLeft, ChevronRight, QrCode, Zap, UserCog, Trash2, Plus, Image as ImageIcon, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
-// --- Firebase Configuration ---
+// --- Firebase Configuration & Initialization ---
+// 智慧判斷設定 (Smart Config):
+// 1. 若在預覽環境 (__firebase_config 存在)，使用系統設定，確保在這裡可以執行。
+// 2. 若在 Github/正式環境 (__firebase_config 不存在)，使用您的 amis-number-learning 設定。
 const getFirebaseConfig = () => {
   if (typeof __firebase_config !== 'undefined') {
     return JSON.parse(__firebase_config);
   }
+  
+  // 您的正式專案設定 (Github Pages 會使用這個)
   return {
     apiKey: "AIzaSyBKTAj-f_WeXIiFc3pNTqRX1T24yF11EOw",
     authDomain: "amis-number-learning.firebaseapp.com",
@@ -24,9 +29,10 @@ const app = initializeApp(getFirebaseConfig());
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// 房間 ID 管理：使用變數以便未來擴充 (例如從 URL 參數讀取)
-const ROOM_ID = 'room_19'; 
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'monopoly-demo-room';
+// 房間 ID：使用 room_21 確保資料全新
+const ROOM_ID = 'room_21'; 
+// 應用程式 ID：預覽環境使用系統變數，正式環境使用自訂 ID
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'monopoly-game-production';
 
 // --- Default Data ---
 const GRID_LAYOUT = [
@@ -404,10 +410,7 @@ export default function MonopolyGame() {
         }));
 
         setDisplayPlayers(prevDisplayPlayers => {
-            // 如果玩家列表被清空或減少，直接重置以避免錯誤
-            if (serverPlayers.length < prevDisplayPlayers.length) {
-                return serverPlayers;
-            }
+            if (serverPlayers.length < prevDisplayPlayers.length) return serverPlayers; // Reset on player removal
             if (prevDisplayPlayers.length === 0) return serverPlayers;
 
             const newDisplayPlayers = [...prevDisplayPlayers];
@@ -423,7 +426,6 @@ export default function MonopolyGame() {
                 const targetPos = serverPlayer.position;
                 if (currentDisplayPos !== targetPos) {
                     hasChanges = true;
-                    // 保持舊位置，讓動畫迴圈處理移動
                     newDisplayPlayers[index] = { ...serverPlayer, position: currentDisplayPos };
                 } else {
                      newDisplayPlayers[index] = serverPlayer;
@@ -444,7 +446,6 @@ export default function MonopolyGame() {
             image: item.defaultImage || ''
           };
         });
-        // 使用 setDoc 確保文件建立
         setDoc(gameDocRef, {
           players: [],
           gridData: initialGridData,
@@ -454,10 +455,8 @@ export default function MonopolyGame() {
           isRolling: false,
           lastActionTimestamp: Date.now(),
           revealedCells: {}
-        }).catch(e => console.error("Init Error:", e));
+        }, { merge: true });
       }
-    }, (error) => {
-        console.error("Firestore sync error:", error);
     });
     return () => unsubscribe();
   }, [user]);
@@ -520,9 +519,7 @@ export default function MonopolyGame() {
                 [cellId]: !currentStatus
             }
         }, { merge: true });
-      } catch (e) {
-          console.error("Reveal Error:", e);
-      }
+      } catch (e) { console.error("Reveal Error:", e); }
   };
 
   const joinGame = async () => {
@@ -534,21 +531,16 @@ export default function MonopolyGame() {
         const assignedColor = PLAYER_COLORS[colorIndex].value;
         const newPlayer = { id: user.uid, name: localPlayerName, color: assignedColor, position: 0, score: 0 };
         
-        // 使用 setDoc merge 解決 "No document to update"
         const existingPlayer = gameState.players.find(p => p.id === user.uid);
         if (!existingPlayer) {
             await setDoc(gameDocRef, { players: arrayUnion(newPlayer) }, { merge: true });
         }
-    } catch(e) {
-        console.error("Join Game Error:", e);
-        alert("加入遊戲失敗，請檢查網路連線");
-    }
+    } catch(e) { console.error("Join Error:", e); }
   };
 
   const createDemoTeams = async () => {
     if (!user) return;
     if (!confirm("確定要建立3組演示玩家嗎？目前的玩家列表將被重置。")) return;
-    
     try {
         const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
         const demoTeamNames = ["第1組 Dakoc", "第2組 Laway", "Ohay"];
@@ -557,28 +549,22 @@ export default function MonopolyGame() {
             { id: 'demo-player-2', name: demoTeamNames[1], color: PLAYER_COLORS[1].value, position: 0, score: 0 },
             { id: 'demo-player-3', name: demoTeamNames[2], color: PLAYER_COLORS[2].value, position: 0, score: 0 }
         ];
-        // 使用 setDoc merge 解決 "No document to update"
         await setDoc(gameDocRef, { players: demoPlayers, currentTurnIndex: 0, diceValue: 1, isRolling: false }, { merge: true });
-    } catch(e) {
-        console.error("Demo Create Error:", e);
-    }
+    } catch(e) { console.error("Demo Error:", e); }
   };
 
   const updatePlayersList = async (newPlayers) => {
       try {
         const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
         await updateDoc(gameDocRef, { players: newPlayers });
-      } catch(e) { console.error("Update Players Error:", e); }
+      } catch(e) { console.error("Update Player Error:", e); }
   };
 
   const rollDice = async () => {
-    // 防止連點或未加入時點擊
     if (gameState.players.length === 0 || gameState.isRolling) return;
-
     try {
         const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
         await updateDoc(gameDocRef, { isRolling: true });
-        
         setTimeout(async () => {
           const roll = Math.floor(Math.random() * 6) + 1;
           await runTransaction(db, async (transaction) => {
@@ -596,7 +582,7 @@ export default function MonopolyGame() {
         }, 1000);
     } catch(e) {
         console.error("Roll Dice Error:", e);
-        // 若失敗嘗試重置狀態
+        // Reset rolling state if error
         const gameDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'monopoly_games', ROOM_ID);
         updateDoc(gameDocRef, { isRolling: false }).catch(()=>{});
     }
@@ -729,14 +715,12 @@ export default function MonopolyGame() {
             <div className="game-grid relative">
                {gridCells.map(cell => {
                  const playersHere = displayPlayers.filter(p => PATH_ORDER[p.position] === cell.id);
-                 // 使用 Firestore 的 revealedCells 狀態，讓所有裝置同步
                  const isRevealed = gameState.revealedCells[cell.id] || false;
                  const hasImage = !!cell.image;
                  return (
                    <div key={cell.id} className="grid-cell wood-texture" style={{ gridArea: cell.area, backgroundColor: cell.color }} onClick={() => {
                         if(isEditing) { setSelectedCell(cell); } else {
                             playSound(cell.sound);
-                            // 同步翻牌狀態到 Firestore
                             if(hasImage) { toggleCellReveal(cell.id); }
                             const el = document.getElementById(`cell-${cell.id}`);
                             if(el) { el.classList.add('active'); setTimeout(() => el.classList.remove('active'), 300); }
